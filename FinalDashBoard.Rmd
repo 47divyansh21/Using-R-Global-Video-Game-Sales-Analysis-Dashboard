@@ -1,0 +1,580 @@
+---
+title: "Video Game Sales Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: cerulean
+    runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(plotly)
+library(DT)
+library(corrplot)
+library(shiny)
+library(scales)
+library(shinydashboard)
+
+# Load Data
+df <- read_csv("C:/Users/d4i7v/OneDrive/Documents/Mtech/sem2/INT553DATACLEANINGR/completeRproject/vgsales.csv", na = c("", "NA", "N/A", "n/a", "null", "NULL"))
+df <- df %>% drop_na(Year, Publisher)
+df$Year <- as.numeric(df$Year)
+
+# Predefine Regions
+regions <- c("All", "NA_Sales", "EU_Sales", "JP_Sales", "Other_Sales", "Global_Sales")
+
+# Reactive Filtered Data
+filtered_data <- reactive({
+  data <- df %>%
+    filter(Year >= input$year[1], Year <= input$year[2])
+
+  if (!is.null(input$genre) && !"All" %in% input$genre) {
+    data <- data %>% filter(Genre %in% input$genre)
+  }
+  if (!is.null(input$platform) && input$platform != "All") {
+    data <- data %>% filter(Platform == input$platform)
+  }
+  if (!is.null(input$publisher) && !"All" %in% input$publisher) {
+    data <- data %>% filter(Publisher %in% input$publisher)
+  }
+  if (!is.null(input$region) && !"All" %in% input$region) {
+    # Only the first selected region will be used for analysis
+    data <- data %>% mutate(Selected_Sales = .data[[input$region[1]]])
+  } else {
+    data <- data %>% mutate(Selected_Sales = Global_Sales)
+  }
+
+  data
+})
+
+observeEvent(input$reset, {
+  updateSelectizeInput(session, "genre", selected = "All")
+  updateSelectizeInput(session, "publisher", selected = "All")
+  updateSelectizeInput(session, "region", selected = "Global_Sales")
+  updateSelectInput(session, "platform", selected = "All")
+  updateSliderInput(session, "year", value = c(1980, 2020))
+})
+```
+
+Overview
+========================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+### Filters
+
+```{r}
+selectizeInput("genre", "Select Genre:", choices = c("All", unique(df$Genre)), selected = "All", multiple = TRUE)
+selectizeInput("platform", "Select Platform:", choices = c("All", unique(df$Platform)), selected = "All", multiple = TRUE)
+selectizeInput("publisher", "Select Publisher:", choices = c("All", unique(df$Publisher)), selected = "All", multiple = TRUE)
+selectInput("region", "Select Region:", choices = regions, selected = "Global_Sales")
+sliderInput("year", "Select Year Range", min = 1980, max = 2020, value = c(1980, 2020), sep = "")
+actionButton("reset", label = tags$span(style = "color:black;", "Reset Filters"), icon = icon("redo"), style = "background-color:white; border-color:#ccc;")
+# Download Button
+downloadButton("downloadData", "Download Filtered Data")
+
+```
+
+```{r}
+# Outputs for Download and KPIs
+output$downloadData <- downloadHandler(
+  filename = function() { paste("filtered_data", ".csv", sep="") },
+  content = function(file) {
+    write.csv(filtered_data(), file, row.names = FALSE)
+  }
+)
+
+output$total_sales <- renderValueBox({
+  valueBox(
+    value = paste0(round(sum(filtered_data()$Global_Sales), 2), " M"),
+    subtitle = "Total Global Sales",
+    icon = icon("dollar-sign"),
+    color = "blue"
+  )
+})
+
+output$total_games <- renderValueBox({
+  valueBox(
+    value = nrow(filtered_data()),
+    subtitle = "Total Games",
+    icon = icon("gamepad"),
+    color = "purple"
+  )
+})
+
+output$unique_publishers <- renderValueBox({
+  valueBox(
+    value = n_distinct(filtered_data()$Publisher),
+    subtitle = "Unique Publishers",
+    icon = icon("users"),
+    color = "green"
+  )
+})
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Dataset Overview
+
+```{r}
+renderDataTable({ datatable(filtered_data()) })
+```
+### Summary Stats
+
+```{r}
+renderUI({
+  top_genre <- filtered_data() %>%
+    group_by(Genre) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    arrange(desc(Sales)) %>%
+    slice_head(n = 1) %>%
+    pull(Genre)
+
+  top_platform <- filtered_data() %>%
+    group_by(Platform) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    arrange(desc(Sales)) %>%
+    slice_head(n = 1) %>%
+    pull(Platform)
+
+  fluidRow(
+    valueBox(round(sum(filtered_data()$Selected_Sales, na.rm = TRUE), 2), paste("Total Sales (", input$region, ")"), icon = icon("dollar-sign"), color = "blue"),
+    valueBox(n_distinct(filtered_data()$Name), "Unique Games", icon = icon("gamepad"), color = "green"),
+    valueBox(n_distinct(filtered_data()$Publisher), "Unique Publishers", icon = icon("building"), color = "yellow"),
+    valueBox(n_distinct(filtered_data()$Platform), "Unique Platforms", icon = icon("cubes"), color = "orange"),
+    valueBox(round(mean(filtered_data()$Selected_Sales, na.rm = TRUE), 2), "Avg Sales per Game", icon = icon("chart-line"), color = "purple"),
+    valueBox(paste("Genre:", top_genre, "/ Platform:", top_platform), "Top Seller (Region)", icon = icon("star"), color = "teal")
+  )
+})
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Games released Per year
+
+```{r, height=400}
+renderPlotly({
+  filtered_data() %>%
+    group_by(Year) %>%
+    summarise(Count = n()) %>%
+    ggplot(aes(x = Year, y = Count)) +
+    geom_line(color = "tomato", size = 0.5) +
+    geom_point(size = 1, color = "tomato") +
+    labs(title = "Games Released per Year", x = "Year", y = "Number of Games") +
+    theme_minimal()
+})
+```
+
+### Global Video Game Sales Trend Over Years
+
+```{r, height=400}
+renderPlotly({
+  filtered_data() %>%
+    group_by(Year) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    ggplot(aes(x = Year, y = Sales)) +
+    geom_line(color = "darkblue", size = 0.5) + 
+    geom_point(size = 1, color = "darkblue") +
+    labs(title = "Global Sales Trend", x = "Year", y = "Sales (Millions)") +
+    theme_minimal()
+})
+
+```
+
+### Top 10 Games by Sales
+
+```{r, height=400}
+renderPlot({
+  filtered_data() %>%
+    arrange(desc(Selected_Sales)) %>%
+    slice_head(n = 10) %>%
+    ggplot(aes(x = reorder(Name, Selected_Sales), y = Selected_Sales, fill = Name)) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    scale_fill_brewer(palette = "Set3") +
+    labs(title = "Top 10 Games by Sales (Selected Region)", x = "Game", y = "Sales (Millions)") +
+    theme_minimal()
+})
+```
+
+Platform 
+========================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+### Filters
+
+```{r}
+
+selectizeInput("genre", "Select Genre:", choices = c("All", unique(df$Genre)), selected = "All", multiple = TRUE)
+selectizeInput("platform", "Select Platform:", choices = c("All", unique(df$Platform)), selected = "All", multiple = TRUE)
+selectizeInput("publisher", "Select Publisher:", choices = c("All", unique(df$Publisher)), selected = "All", multiple = TRUE)
+selectInput("region", "Select Region:", choices = regions, selected = "Global_Sales")
+sliderInput("year", "Select Year Range", min = 1980, max = 2020, value = c(1980, 2020), sep = "")
+actionButton("reset", label = tags$span(style = "color:black;", "Reset Filters"), icon = icon("redo"), style = "background-color:white; border-color:#ccc;")
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Popular Platforms by Number of Games Released
+
+```{r, height=400}
+renderPlotly({
+  platform_game <- filtered_data() %>% 
+    group_by(Platform) %>% 
+    count() %>% 
+    arrange(desc(n)) %>% 
+    head(10)
+
+  ggplot(platform_game, aes(x = n, y = reorder(Platform, n), fill = Platform)) +
+    geom_col() +
+    geom_text(aes(label = n), vjust = 0.5, hjust = -0.1, size = 4) +
+    theme_minimal(base_size = 12, base_family = "Source Sans Pro") +
+    theme(panel.grid.minor = element_blank()) +
+    scale_x_continuous(limits = c(0, 2500)) +
+    labs(x = "Games Released", y = NULL, title = "Platforms by Number of Games Released") +
+    guides(fill = "none")
+})
+```
+
+### Top 5 Platforms by Sales
+
+```{r}
+renderPlotly({
+  platform_sales <- filtered_data() %>%
+    group_by(Platform) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    arrange(desc(Sales)) %>%
+    slice_head(n = 5) %>%
+    mutate(pct = Sales / sum(Sales) * 100,
+           label = paste0(Platform, ": ", round(pct, 1), "%"))
+
+  plot_ly(platform_sales, labels = ~Platform, values = ~Sales, type = 'pie',
+          textinfo = 'label+percent',
+          insidetextfont = list(color = '#FFFFFF'),
+          marker = list(colors = c('#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#c2c2f0'),
+                        line = list(color = '#000000', width = 1.5)),
+          showlegend = FALSE) %>%
+    layout(title = paste('Top 5 Platforms by Sales (', input$region, ')'),
+           margin = list(l = 20, r = 20, b = 20, t = 50))
+})
+
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Platform Sales Trend Over Time
+```{r, height=650}
+renderPlotly({
+  platform_trend <- filtered_data() %>%
+    group_by(Year, Platform) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE), .groups = "drop")
+
+  top_platforms <- filtered_data() %>%
+    group_by(Platform) %>%
+    summarise(Total_Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    arrange(desc(Total_Sales)) %>%
+    slice_head(n = 5) %>%
+    pull(Platform)
+
+  filtered_platform_trend <- platform_trend %>%
+    filter(Platform %in% top_platforms)
+
+  ggplot(filtered_platform_trend, aes(x = Year, y = Sales, color = Platform)) +
+    geom_line(size = 0.5) +
+    geom_point(size = 1) +
+    labs(title = "Platform Sales Trends Over Time (Region-Sensitive)",
+         x = "Year", y = "Sales (Millions)", color = "Platform") +
+    theme_minimal()
+})
+```
+Genre 
+========================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+### Filters
+
+```{r}
+selectizeInput("genre", "Select Genre:", choices = c("All", unique(df$Genre)), selected = "All", multiple = TRUE)
+selectizeInput("platform", "Select Platform:", choices = c("All", unique(df$Platform)), selected = "All", multiple = TRUE)
+selectizeInput("publisher", "Select Publisher:", choices = c("All", unique(df$Publisher)), selected = "All", multiple = TRUE)
+selectInput("region", "Select Region:", choices = regions, selected = "Global_Sales")
+sliderInput("year", "Select Year Range", min = 1980, max = 2020, value = c(1980, 2020), sep = "")
+actionButton("reset", label = tags$span(style = "color:black;", "Reset Filters"), icon = icon("redo"), style = "background-color:white; border-color:#ccc;")
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Popularity of Game Genres by Sales
+
+```{r, height=400}
+renderPlotly({
+  filtered_data() %>%
+    group_by(Genre) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    ggplot(aes(x = reorder(Genre, Sales), y = Sales)) +
+    geom_col(fill = "coral") +
+    coord_flip() +
+    labs(title = "Sales by Genre (Selected Region)", x = "Genre", y = "Sales (Millions)") +
+    theme_minimal()
+})
+```
+
+### Number of Games by Genre (Count Plot)
+```{r, height=400}
+renderPlot({
+  genre_count <- filtered_data() %>% count(Genre)
+
+  ggplot(genre_count, aes(x = reorder(Genre, n), y = n, fill = n)) +
+    geom_col() +
+    coord_flip() +
+    scale_fill_gradientn(colors = scales::gradient_n_pal(
+      c("#3b4cc0", "#e0f3f8", "#fbb4ae", "#b40426"))(
+      seq(0, 1, length.out = 100))) +
+    labs(title = "Number of Games by Genre", x = "Genre", y = "Count") +
+    theme_minimal()
+})
+```
+
+Row
+-----------------------------------------------------------------------
+
+### games released over the years
+
+```{r, height=400}
+renderPlot({
+  filtered_data() %>%
+    group_by(Year, Genre) %>%
+    summarise(total = n()) %>%
+    ggplot(aes(x = Year, y = total, color = Genre)) +
+    geom_line(size = 0.5) +
+    labs(title = "Genre Trends Over Time", x = "Year", y = "Number of Games")
+})
+```
+
+### Genre sales  trend over the year
+
+```{r, height=400}
+renderPlot({
+  filtered_data() %>%
+    group_by(Genre, Year) %>%
+    summarise(total_sales = sum(Global_Sales)) %>%
+    ggplot(aes(x = Year, y = total_sales, fill = Genre)) +
+    geom_col() +
+    scale_fill_brewer(palette = "Set3") +
+    theme_classic() +
+    labs(title = "Genre Sales Over Time", y = "Global Sales (Millions)")
+})
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Genre Sales by Region
+
+```{r, height=400}
+renderPlot({
+  sale <- filtered_data() %>%
+    select(Genre, NA_Sales, EU_Sales, JP_Sales, Other_Sales) %>%
+    group_by(Genre) %>%
+    pivot_longer(cols = c(NA_Sales, EU_Sales, JP_Sales, Other_Sales), names_to = "Region", values_to = "Sales")
+
+  ggplot(sale, aes(x = Genre, y = Sales, fill = Region)) +
+    geom_col(position = "dodge") +
+    labs(title = "Genre Sales per Region", x= "Genre", y = "Sales (Millions)") +
+    theme_bw() +
+    theme(axis.text.x= element_text(angle = 90)) +
+    scale_fill_brewer(palette = "Set1")
+})
+```
+
+Publishers
+========================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+### Filters
+
+```{r}
+selectizeInput("genre", "Select Genre:", choices = c("All", unique(df$Genre)), selected = "All", multiple = TRUE)
+selectizeInput("platform", "Select Platform:", choices = c("All", unique(df$Platform)), selected = "All", multiple = TRUE)
+selectizeInput("publisher", "Select Publisher:", choices = c("All", unique(df$Publisher)), selected = "All", multiple = TRUE)
+selectInput("region", "Select Region:", choices = regions, selected = "Global_Sales")
+sliderInput("year", "Select Year Range", min = 1980, max = 2020, value = c(1980, 2020), sep = "")
+actionButton("reset", label = tags$span(style = "color:black;", "Reset Filters"), icon = icon("redo"), style = "background-color:white; border-color:#ccc;")
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Top Publishers by Game Count (Most Game Released)
+
+```{r, height=400}
+renderPlotly({
+  filtered_data() %>%
+    count(Publisher, sort = TRUE) %>%
+    slice_head(n = 10) %>%
+    ggplot(aes(x = reorder(Publisher, n), y = n)) +
+    geom_col(fill = "darkred") +
+    coord_flip() +
+    labs(title = "Top Publishers by Game Count", x = "Publisher", y = "Count") +
+    theme_minimal()
+})
+```
+
+### Top 10 Publishers by Sales
+
+```{r, height=400}
+renderPlotly({
+  top_publishers_sales <- filtered_data() %>%
+    group_by(Publisher) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    arrange(desc(Sales)) %>%
+    slice(1:10)
+
+  ggplot(top_publishers_sales, aes(x = reorder(Publisher, Sales), y = Sales, fill = Sales)) +
+    geom_col() +
+    scale_fill_viridis_c(option = "flare", direction = -1) +
+    coord_flip() +
+    labs(title = "Top Publishers by  Sales", x = "Publisher", y = "Sales (Millions)") +
+    theme_minimal()
+})
+```
+Row
+-----------------------------------------------------------------------
+### Top publisher by Region
+
+```{r, height=400}
+renderPlot({
+  get_top_publishers <- function(region_col, region_name) {
+    df %>%
+      filter(
+        (Genre == input$genre | input$genre == "All"),
+        (Platform == input$platform | input$platform == "All"),
+        Year >= input$year[1], Year <= input$year[2]
+      ) %>%
+      group_by(Publisher) %>%
+      summarise(Sales = sum(.data[[region_col]], na.rm = TRUE)) %>%
+      arrange(desc(Sales)) %>%
+      slice_head(n = 5) %>%
+      mutate(Region = region_name)
+  }
+
+  top_na     <- get_top_publishers("NA_Sales", "North America")
+  top_eu     <- get_top_publishers("EU_Sales", "Europe")
+  top_jp     <- get_top_publishers("JP_Sales", "Japan")
+  top_other  <- get_top_publishers("Other_Sales", "Other")
+  top_global <- get_top_publishers("Global_Sales", "Global")
+
+  top_publishers_all <- bind_rows(top_na, top_eu, top_jp, top_other, top_global)
+
+  ggplot(top_publishers_all, aes(x = reorder(Publisher, Sales), y = Sales, fill = Publisher)) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    facet_wrap(~ Region, scales = "free_y") +
+    labs(title = "Top 5 Publishers by Region (Including Global)",
+         x = "Publisher", y = "Sales (Millions)") +
+    theme_minimal() +
+    theme(strip.text = element_text(face = "bold", size = 12))
+})
+```
+
+### Sales Trends Over Year
+
+```{r}
+renderPlot({
+  publisher_trend <- filtered_data() %>%
+    group_by(Year, Publisher) %>%
+    summarise(Sales = sum(Selected_Sales, na.rm = TRUE), .groups = "drop")
+
+  top_publishers <- filtered_data() %>%
+    group_by(Publisher) %>%
+    summarise(Total_Sales = sum(Selected_Sales, na.rm = TRUE)) %>%
+    arrange(desc(Total_Sales)) %>%
+    slice_head(n = 5) %>%
+    pull(Publisher)
+
+  filtered_trend <- publisher_trend %>%
+    filter(Publisher %in% top_publishers)
+
+  ggplot(filtered_trend, aes(x = Year, y = Sales, color = Publisher)) +
+    geom_line(size = 0.5) +
+    geom_point(size = 0.5) +
+    labs(title = "Publisher Sales Trends Over Time (Region-Sensitive)",
+         x = "Year", y = "Sales (Millions)", color = "Publisher") +
+    theme_minimal()
+})
+```
+
+Correlation Heat Map
+========================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+### Filters
+
+```{r}
+selectizeInput("genre", "Select Genre:", choices = c("All", unique(df$Genre)), selected = "All", multiple = TRUE)
+selectizeInput("platform", "Select Platform:", choices = c("All", unique(df$Platform)), selected = "All", multiple = TRUE)
+selectizeInput("publisher", "Select Publisher:", choices = c("All", unique(df$Publisher)), selected = "All", multiple = TRUE)
+selectInput("region", "Select Region:", choices = regions, selected = "Global_Sales")
+sliderInput("year", "Select Year Range", min = 1980, max = 2020, value = c(1980, 2020), sep = "")
+actionButton("reset", label = tags$span(style = "color:black;", "Reset Filters"), icon = icon("redo"), style = "background-color:white; border-color:#ccc;")
+```
+Row
+-----------------------------------------------------------------------
+
+### Correlation Heatmap
+
+```{r, height=400}
+renderPlot({
+  sales_data <- filtered_data() %>%
+    select(NA_Sales, EU_Sales, JP_Sales, Other_Sales, Global_Sales)
+  cor_matrix <- cor(sales_data, use = "complete.obs")
+  corrplot(cor_matrix, method = "color", type = "upper", addCoef.col = "green")
+})
+```
+
+About this Dashboard
+========================================================
+
+Column
+-----------------------------------------------------------------------
+### About Myself
+- Name : Divyanshu Singh
+- University : Lovely Professional University
+- Post Graduation : M.Tech. (Data Science and Analytics)
+- Github : https://github.com/47divyansh21/Using-R-Global-Video-Game-Sales-Analysis-Dashboard.git
+- Linkedin : https://www.linkedin.com/in/divyanshu4721/
+
+### Purpose
+
+This dashboard provides an interactive visual analysis of video game sales data globally and regionally. Users can filter by year, genre, platform, and publisher to explore:
+
+- Trends in game releases and sales
+- Performance of top publishers and platforms
+- Genre popularity and regional breakdowns
+
+### Dataset
+
+The data set taken from [DataWorld](https://data.world/julienf/video-games-global-sales-in-volume-1983-2017) and this includes sales figures for video games across regions like North America, Europe, Japan, and others.
+
+### Instructions
+
+Use the filters on the sidebar to customize the view. You can also download the filtered data using the provided download button.
